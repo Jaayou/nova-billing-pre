@@ -38,4 +38,19 @@ public class PreparationJobConfigTest {
 
         assertEquals(BatchStatus.COMPLETED, jobExecution.getStatus());
     }
+
+    @Test
+    @Commit
+    public void testWiredPreparation() throws Exception {
+        JobParameters jobParameters = new JobParametersBuilder()
+                .addString("domain", "WIRED")
+                .addString("billingDate", "2025-10-31")
+                .addString("company", "SKB")
+                .addLong("timestamp", System.currentTimeMillis())
+                .toJobParameters();
+
+        JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
+
+        assertEquals(BatchStatus.COMPLETED, jobExecution.getStatus());
+    }
 }
