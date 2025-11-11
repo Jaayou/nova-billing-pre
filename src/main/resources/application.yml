@@ -15,3 +15,8 @@ spring:
   batch:
     job:
       enabled: false
+
+# [추가] SQL 스크립트 초기화를 '항상' 활성화합니다.
+  sql:
+    init:
+      mode: always
