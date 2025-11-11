@@ -1,4 +1,4 @@
-package com.nova.billing.preparation.core.job;
+package com.nova.billing.preparation.core.processor;
 
 import java.util.List;
 
@@ -34,6 +34,7 @@ public class FinalTargetProcessor implements ItemProcessor<StagingData, TargetIt
 
         for (TargetEnricher enricher : enrichers) {
             if (enricher.supports(domain)) {
+                System.out.println("### [FinalTargetProcessor] Applying enricher: " + enricher.getClass().getSimpleName());
                 enricher.enrich(target, item);
             }
         }
