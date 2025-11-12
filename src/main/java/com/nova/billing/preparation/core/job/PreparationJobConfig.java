@@ -2,6 +2,8 @@ package com.nova.billing.preparation.core.job;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.sql.DataSource;
 
@@ -49,15 +51,22 @@ public class PreparationJobConfig {
     private final FinalTargetProcessor finalTargetProcessor;
     private final ItemWriter<TargetItem> preparationWriter;
 
+    // private final Step extractActiveContractsStep;
+    // private final Step summarizeUsageStep;
+    // private final Step finalJoinAndEnrichStep;
+
     public static final String JOB_NAME = "PreparationJob";
 
     @Bean(name = JOB_NAME)
-    public Job preparationJob() {
+    public Job preparationJob(
+            Step extractActiveContractsStep,
+            Step summarizeUsageStep,
+            Step finalJoinAndEnrichStep) {
         return new JobBuilder(JOB_NAME, jobRepository)
                 // .start(preparationStep())
-                .start(extractActiveContractsStep())
-                .next(summarizeUsageStep())
-                .next(finalJoinAndEnrichStep())
+                .start(extractActiveContractsStep)
+                .next(summarizeUsageStep)
+                .next(finalJoinAndEnrichStep)
                 .build();
     }
 
@@ -73,24 +82,36 @@ public class PreparationJobConfig {
     // }
 
     @Bean
-    public Step extractActiveContractsStep() {
+    @JobScope
+    public Step extractActiveContractsStep(ItemReader<ContractInfo> step1Reader, ItemWriter<ContractInfo> step1Writer) {
         return new StepBuilder("extractActiveContractsStep", jobRepository)
                 .<ContractInfo, ContractInfo>chunk(100, transactionManager)
-                .reader(step1Reader())
-                .writer(step1Writer())
+                .reader(step1Reader)
+                .writer(step1Writer)
                 .build();
     }
 
     @Bean
     @StepScope
-    public ItemReader<ContractInfo> step1Reader() {
+    public Map<String, Object> step1ReaderParameterValues(
+            @Value("#{jobParameters['billingDate']}") String billingDateStr) {
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("billingDate", billingDateStr);
+        return parameters;
+    }
+
+    @Bean
+    @StepScope
+    public ItemReader<ContractInfo> step1Reader(Map<String, Object> step1ReaderParameterValues) {
+
         // [Step 1 Reader] 계약 테이블과 고객 정보 테이블을 조인
         SqlPagingQueryProviderFactoryBean providerFactory = new SqlPagingQueryProviderFactoryBean();
         providerFactory.setDataSource(dataSource);
         providerFactory.setSelectClause("SELECT T1.CONTRACT_NO, T1.CUSTOMER_NO, T2.GRADE, T1.ACTIVATION_DATE");
-        providerFactory.setFromClause("FROM REQ_WIRELESS_CONTRACT T1 JOIN CUSTOMER_INFO T2 ON T1.CUSTOMER_NO = T2.CUSTOMER_NO");
-        providerFactory.setWhereClause("WHERE T1.STATUS = 'ACTIVE'");
-        //providerFactory.setSortKey("T1.CONTRACT_NO");
+        providerFactory.setFromClause(
+                "FROM REQ_WIRELESS_CONTRACT T1 JOIN CUSTOMER_INFO T2 ON T1.CUSTOMER_NO = T2.CUSTOMER_NO");
+        providerFactory.setWhereClause("WHERE T1.STATUS = 'ACTIVE' AND T1.ACTIVATION_DATE <= :billingDate");
+        // providerFactory.setSortKey("T1.CONTRACT_NO");
         providerFactory.setSortKey("CONTRACT_NO");
 
         return new JdbcPagingItemReaderBuilder<ContractInfo>()
@@ -98,6 +119,7 @@ public class PreparationJobConfig {
                 .dataSource(dataSource)
                 .pageSize(1000)
                 .queryProvider(getQueryProvider(providerFactory))
+                .parameterValues(step1ReaderParameterValues)
                 .rowMapper(new BeanPropertyRowMapper<>(ContractInfo.class))
                 .build();
     }
@@ -109,7 +131,7 @@ public class PreparationJobConfig {
         return new JdbcBatchItemWriterBuilder<ContractInfo>()
                 .dataSource(dataSource)
                 .sql("INSERT INTO STAGING_CONTRACTS (CONTRACT_NO, CUSTOMER_NO, GRADE, ACTIVATION_DATE) " +
-                     "VALUES (:contractNo, :customerNo, :grade, :activationDate)")
+                        "VALUES (:contractNo, :customerNo, :grade, :activationDate)")
                 .beanMapped()
                 .build();
     }
@@ -123,7 +145,7 @@ public class PreparationJobConfig {
                 .build();
     }
 
-@Bean
+    @Bean
     @StepScope
     public ItemReader<UsageSummary> step2Reader() {
         // [Step 2 Reader] 원시 사용량 데이터를 계약별로 집계(GROUP BY)
@@ -150,7 +172,7 @@ public class PreparationJobConfig {
         return new JdbcBatchItemWriterBuilder<UsageSummary>()
                 .dataSource(dataSource)
                 .sql("INSERT INTO STAGING_USAGE (CONTRACT_NO, TOTAL_USAGE_AMOUNT) " +
-                     "VALUES (:contractNo, :totalUsageAmount)")
+                        "VALUES (:contractNo, :totalUsageAmount)")
                 .beanMapped()
                 .build();
     }
@@ -166,15 +188,17 @@ public class PreparationJobConfig {
                 .build();
     }
 
-@Bean
+    @Bean
     @StepScope
     public ItemReader<StagingData> step3Reader() {
         // [Step 3 Reader] 두 개의 임시 테이블(Staging)을 조인
         SqlPagingQueryProviderFactoryBean providerFactory = new SqlPagingQueryProviderFactoryBean();
         providerFactory.setDataSource(dataSource);
-        providerFactory.setSelectClause("SELECT T1.CONTRACT_NO, T1.CUSTOMER_NO, T1.GRADE, T1.ACTIVATION_DATE, T2.TOTAL_USAGE_AMOUNT");
-        providerFactory.setFromClause("FROM STAGING_CONTRACTS T1 LEFT OUTER JOIN STAGING_USAGE T2 ON T1.CONTRACT_NO = T2.CONTRACT_NO");
-        //providerFactory.setSortKey("T1.CONTRACT_NO");
+        providerFactory.setSelectClause(
+                "SELECT T1.CONTRACT_NO, T1.CUSTOMER_NO, T1.GRADE, T1.ACTIVATION_DATE, T2.TOTAL_USAGE_AMOUNT");
+        providerFactory.setFromClause(
+                "FROM STAGING_CONTRACTS T1 LEFT OUTER JOIN STAGING_USAGE T2 ON T1.CONTRACT_NO = T2.CONTRACT_NO");
+        // providerFactory.setSortKey("T1.CONTRACT_NO");
         providerFactory.setSortKey("CONTRACT_NO");
 
         return new JdbcPagingItemReaderBuilder<StagingData>()
@@ -193,12 +217,12 @@ public class PreparationJobConfig {
         return new JdbcBatchItemWriterBuilder<TargetItem>()
                 .dataSource(dataSource)
                 .sql("INSERT INTO BAT_PREPARATION_TARGET (REP_CONTRACT_ID, CUSTOMER_ID, DOMAIN_TYPE, EXTRA_INFO) " +
-                     "VALUES (:representativeContractId, :customerId, :domainType, :extraInfo)")
+                        "VALUES (:representativeContractId, :customerId, :domainType, :extraInfo)")
                 .beanMapped()
                 .build();
     }
 
-// --- Helper DTOs & Methods ---
+    // --- Helper DTOs & Methods ---
 
     // PagingQueryProvider 생성 헬퍼
     private PagingQueryProvider getQueryProvider(SqlPagingQueryProviderFactoryBean factory) {
@@ -210,7 +234,9 @@ public class PreparationJobConfig {
     }
 
     // Step 1 Reader/Writer DTO
-    @Data @NoArgsConstructor @AllArgsConstructor
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class ContractInfo {
         private Long contractNo;
         private Long customerNo;
@@ -219,11 +245,13 @@ public class PreparationJobConfig {
     }
 
     // Step 2 Reader/Writer DTO
-    @Data @NoArgsConstructor @AllArgsConstructor
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
     public static class UsageSummary {
         private Long contractNo;
         private BigDecimal totalUsageAmount;
-    }    
+    }
 
     @Bean
     @StepScope
@@ -248,7 +276,7 @@ public class PreparationJobConfig {
                 "SELECT T1.CONTRACT_NO, T1.CUSTOMER_NO, T1.GRADE, T1.ACTIVATION_DATE, T2.TOTAL_USAGE_AMOUNT");
         providerFactory.setFromClause(
                 "FROM STAGING_CONTRACTS T1 LEFT OUTER JOIN STAGING_USAGE T2 ON T1.CONTRACT_NO = T2.CONTRACT_NO");
-        //providerFactory.setSortKey("T1.CONTRACT_NO");
+        // providerFactory.setSortKey("T1.CONTRACT_NO");
         providerFactory.setSortKey("CONTRACT_NO");
 
         PagingQueryProvider queryProvider;
